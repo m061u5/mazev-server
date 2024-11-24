@@ -10,14 +10,11 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
         property = "type"
 )
 @JsonSubTypes({
-        @JsonSubTypes.Type(value = Command.Increment.class, name = "Increment"),
-        @JsonSubTypes.Type(value = Command.Decrement.class, name = "Decrement")
+        @JsonSubTypes.Type(value = Increment.class, name = "Increment"),
+        @JsonSubTypes.Type(value = Decrement.class, name = "Decrement")
 })
-public sealed interface Command {
+public sealed interface Command permits Increment, Decrement {
     // Command variants as records
-    record Increment(String clientId) implements Command {}
-
-    record Decrement(String clientId) implements Command {}
 }
 
 
