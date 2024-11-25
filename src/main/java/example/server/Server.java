@@ -1,4 +1,4 @@
-package example;
+package example.server;
 
 // Server.java
 
@@ -10,6 +10,11 @@ import java.util.concurrent.locks.*;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import example.domain.Request;
+import example.domain.Response;
+import example.domain.game.Action;
+import example.domain.game.Entity;
+import example.game.Game;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -17,14 +22,20 @@ public class Server {
     private static final Logger logger = LoggerFactory.getLogger(Server.class);
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
-    private final AtomicReference<State> state = new AtomicReference<>(new State(0));
-    private static final BlockingQueue<Command> commandQueue = new LinkedBlockingQueue<>();
-    private static final Lock stateLock = new ReentrantLock();
-    private static final Condition stateUpdated = stateLock.newCondition();
+    private final AtomicReference<Response.StateLocations> state = new AtomicReference<>(new Response.StateLocations(Set.of()));
+    private final BlockingQueue<Action> actionsQueue = new LinkedBlockingQueue<>();
+    private final Lock stateLock = new ReentrantLock();
+    private final Condition stateUpdated = stateLock.newCondition();
+    private final Game game;
 
-    public static void main(String[] args) throws IOException {
-        final var server = new Server();
-        server.start(8080);
+    private final Map<Request.Authorize, Response> known = Map.of(
+            new Request.Authorize("1234"),
+            new Response.Authorized(new Entity.Player("Player 0"))
+    );
+
+    public Server(Game game) {
+        this.game = game;
+        game.addEntity(new Entity.Player("Player 0"));
     }
 
     public void start(int port) throws IOException {
@@ -51,6 +62,35 @@ public class Server {
              final var os = clientSocket.getOutputStream();
              final var osr = new OutputStreamWriter(os);
              final var writer = new BufferedWriter(osr)) {
+            // handle authorization
+            final var line = reader.readLine();
+            if (line == null) {
+                return;
+            }
+
+            final var request = objectMapper.readValue(line, Request.class);
+            if (Objects.requireNonNull(request) instanceof Request.Authorize authorize) {
+                final var response = known.getOrDefault(authorize, new Response.Unauthorized());
+                final var json = objectMapper.writeValueAsString(response);
+                writer.write(json);
+                writer.newLine();
+                writer.flush();
+
+                if (response instanceof Response.Unauthorized) {
+                    return;
+                }
+            } else {
+                // ignore any other command
+                return;
+            }
+
+            {
+                final var json = objectMapper.writeValueAsString(new Response.StateCave(game.cave()));
+                writer.write(json);
+                writer.newLine();
+                writer.flush();
+            }
+
             Thread t1 = Thread.startVirtualThread(() -> handleClientCommands(reader));
             Thread t2 = Thread.startVirtualThread(() -> handleClientState(writer));
             t1.join();
@@ -71,23 +111,17 @@ public class Server {
                 Thread.sleep(1000);
 
                 // Process all collected commands
-                final var commands = new LinkedList<Command>();
-                commandQueue.drainTo(commands);
+                final var actions = new LinkedList<Action>();
+                actionsQueue.drainTo(actions);
 
-                // Update the state
-                var newValue = state.get().value();
-                for (final var command : commands) {
-                    newValue = switch (command) {
-                        case Increment ic -> newValue + 1;
-                        case Decrement dc -> newValue - 1;
-                    };
-                }
+                final var locations = game.apply(actions);
 
+                final var entityLocations = locations.entrySet().stream().map(entry -> new Response.StateLocations.EntityLocation(entry.getKey(), entry.getValue())).toList();
                 // Update the state
                 stateLock.lock();
                 try {
-                    state.set(new State(newValue));
-                    logger.info("State updated to {}", newValue);
+                    state.set(new Response.StateLocations(entityLocations));
+                    logger.info("State updated to {}", entityLocations);
                     // Notify client state threads
                     stateUpdated.signalAll();
                 } finally {
@@ -101,17 +135,19 @@ public class Server {
     }
 
     private void handleClientCommands(BufferedReader reader) {
-        try  {
+        try {
             while (!Thread.currentThread().isInterrupted()) {
-                 final var line = reader.readLine();
-                 if (line == null) {
-                     break;
-                 }
+                final var line = reader.readLine();
+                if (line == null) {
+                    break;
+                }
 
-                final var command = objectMapper.readValue(line, Command.class);
-                logger.info("Received command: {}", command);
+                final var request = objectMapper.readValue(line, Request.class);
+                logger.info("Received command: {}", request);
 
-                commandQueue.put(command);
+                if (Objects.requireNonNull(request) instanceof Request.Command(Entity.Player.Direction direction)) {
+                    actionsQueue.put(new Action(new Entity.Player("dummy"), direction));
+                }
             }
         } catch (IOException | InterruptedException e) {
             Thread.currentThread().interrupt();
