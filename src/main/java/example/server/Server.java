@@ -28,22 +28,24 @@ public class Server {
     private final Condition stateUpdated = stateLock.newCondition();
     private final Game game;
 
-    private final Map<Request.Authorize, Response> known = Map.of(
+    private final Map<Request.Authorize, Entity.Player> known = Map.of(
             new Request.Authorize("1234"),
-            new Response.Authorized(new Entity.Player("Player 0"))
+            new Entity.Player("Player 0")
     );
 
     public Server(Game game) {
         this.game = game;
-        game.addEntity(new Entity.Player("Player 0"));
+        game.addEntity(new Entity.Player("Player 0"), game::randomLocation);
+        game.render();
     }
 
-    public void start(int port) throws IOException {
+    public void start(int port) {
+        // Start the commands processing thread
+        final var threadProcessCommand = Executors.defaultThreadFactory().newThread(this::processCommands);
+        threadProcessCommand.start();
+
         try (final var serverSocket = new ServerSocket(port)) {
             logger.info("Server started on port {}", port);
-
-            // Start the commands processing thread
-            Thread.startVirtualThread(this::processCommands);
 
             while (!Thread.currentThread().isInterrupted()) {
                 final var clientSocket = serverSocket.accept();
@@ -52,6 +54,10 @@ public class Server {
                 // Start a client connection thread
                 Thread.startVirtualThread(() -> handleClientConnection(clientSocket));
             }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        } finally {
+            threadProcessCommand.interrupt();
         }
     }
 
@@ -68,19 +74,23 @@ public class Server {
                 return;
             }
 
+            final Entity.Player player;
             final var request = objectMapper.readValue(line, Request.class);
             if (Objects.requireNonNull(request) instanceof Request.Authorize authorize) {
-                final var response = known.getOrDefault(authorize, new Response.Unauthorized());
-                final var json = objectMapper.writeValueAsString(response);
+                player = known.get(authorize);
+                if (player == null) {
+                    final var json = objectMapper.writeValueAsString(new Response.Unauthorized());
+                    writer.write(json);
+                    writer.newLine();
+                    writer.flush();
+                    return;
+                }
+
+                final var json = objectMapper.writeValueAsString(new Response.Authorized(player));
                 writer.write(json);
                 writer.newLine();
                 writer.flush();
-
-                if (response instanceof Response.Unauthorized) {
-                    return;
-                }
             } else {
-                // ignore any other command
                 return;
             }
 
@@ -91,7 +101,7 @@ public class Server {
                 writer.flush();
             }
 
-            Thread t1 = Thread.startVirtualThread(() -> handleClientCommands(reader));
+            Thread t1 = Thread.startVirtualThread(() -> handleClientCommands(reader, player));
             Thread t2 = Thread.startVirtualThread(() -> handleClientState(writer));
             t1.join();
             t2.join();
@@ -134,7 +144,7 @@ public class Server {
         }
     }
 
-    private void handleClientCommands(BufferedReader reader) {
+    private void handleClientCommands(BufferedReader reader, Entity.Player player) {
         try {
             while (!Thread.currentThread().isInterrupted()) {
                 final var line = reader.readLine();
@@ -146,7 +156,7 @@ public class Server {
                 logger.info("Received command: {}", request);
 
                 if (Objects.requireNonNull(request) instanceof Request.Command(Entity.Player.Direction direction)) {
-                    actionsQueue.put(new Action(new Entity.Player("dummy"), direction));
+                    actionsQueue.put(new Action(player, direction));
                 }
             }
         } catch (IOException | InterruptedException e) {
