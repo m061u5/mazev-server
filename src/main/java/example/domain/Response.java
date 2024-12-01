@@ -2,9 +2,10 @@ package example.domain;
 
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
-import example.domain.game.Entity;
+import example.domain.game.Item;
 import example.domain.game.Location;
 import example.domain.game.Cave;
+import example.domain.game.Player;
 
 import java.util.Collection;
 @JsonTypeInfo(
@@ -22,12 +23,14 @@ public sealed interface Response {
     record StateCave(Cave cave) implements Response {
     }
 
-    record StateLocations(Collection<EntityLocation> entityLocations) implements Response {
-        public record EntityLocation(Entity entity, Location location) {
+    record StateLocations(Collection<ItemLocation> itemLocations, Collection<PlayerLocation> playerLocations) implements Response {
+        public record ItemLocation(Item entity, Location location) {
+        }
+        public record PlayerLocation(Player entity, Location location) {
         }
     }
 
-    record Authorized(Entity.Player player) implements Response {
+    record Authorized(Player.HumanPlayer humanPlayer) implements Response {
     }
 
     record Unauthorized() implements Response {

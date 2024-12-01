@@ -2,7 +2,7 @@ package example.domain;
 
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
-import example.domain.game.Entity;
+import example.domain.game.Direction;
 
 @JsonTypeInfo(
         use = JsonTypeInfo.Id.NAME,
@@ -17,6 +17,6 @@ public sealed interface Request {
     record Authorize(String key) implements Request {
     }
 
-    record Command(Entity.Player.Direction direction) implements Request {
+    record Command(Direction direction) implements Request {
     }
 }

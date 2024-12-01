@@ -13,7 +13,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import example.domain.Request;
 import example.domain.Response;
 import example.domain.game.Action;
-import example.domain.game.Entity;
+import example.domain.game.Direction;
+import example.domain.game.Player;
 import example.game.Game;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,20 +23,20 @@ public class Server {
     private static final Logger logger = LoggerFactory.getLogger(Server.class);
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
-    private final AtomicReference<Response.StateLocations> state = new AtomicReference<>(new Response.StateLocations(Set.of()));
+    private final AtomicReference<Response.StateLocations> state = new AtomicReference<>(new Response.StateLocations(List.of(), List.of()));
     private final BlockingQueue<Action> actionsQueue = new LinkedBlockingQueue<>();
     private final Lock stateLock = new ReentrantLock();
     private final Condition stateUpdated = stateLock.newCondition();
     private final Game game;
 
-    private final Map<Request.Authorize, Entity.Player> known = Map.of(
+    private final Map<Request.Authorize, Player.HumanPlayer> known = Map.of(
             new Request.Authorize("1234"),
-            new Entity.Player("Player 0")
+            new Player.HumanPlayer("Player 0")
     );
 
     public Server(Game game) {
         this.game = game;
-        game.addEntity(new Entity.Player("Player 0"), game::randomLocation);
+        game.add(new Player.HumanPlayer("Player 0"), game::randomLocation);
         game.render();
     }
 
@@ -74,7 +75,7 @@ public class Server {
                 return;
             }
 
-            final Entity.Player player;
+            final Player.HumanPlayer player;
             final var request = objectMapper.readValue(line, Request.class);
             if (Objects.requireNonNull(request) instanceof Request.Authorize authorize) {
                 player = known.get(authorize);
@@ -124,14 +125,16 @@ public class Server {
                 final var actions = new LinkedList<Action>();
                 actionsQueue.drainTo(actions);
 
-                final var locations = game.apply(actions);
+                game.step(actions);
 
-                final var entityLocations = locations.entrySet().stream().map(entry -> new Response.StateLocations.EntityLocation(entry.getKey(), entry.getValue())).toList();
+                final var itemLocations = game.items().entrySet().stream().map(entry -> new Response.StateLocations.ItemLocation(entry.getKey(), entry.getValue())).toList();
+                final var playerLocations = game.players().entrySet().stream().map(entry -> new Response.StateLocations.PlayerLocation(entry.getKey(), entry.getValue())).toList();
                 // Update the state
                 stateLock.lock();
                 try {
-                    state.set(new Response.StateLocations(entityLocations));
-                    logger.info("State updated to {}", entityLocations);
+                    state.set(new Response.StateLocations(itemLocations, playerLocations));
+                    logger.info("Items updated to {}", itemLocations);
+                    logger.info("Players updated to {}", playerLocations);
                     // Notify client state threads
                     stateUpdated.signalAll();
                 } finally {
@@ -144,7 +147,7 @@ public class Server {
         }
     }
 
-    private void handleClientCommands(BufferedReader reader, Entity.Player player) {
+    private void handleClientCommands(BufferedReader reader, Player.HumanPlayer player) {
         try {
             while (!Thread.currentThread().isInterrupted()) {
                 final var line = reader.readLine();
@@ -155,7 +158,7 @@ public class Server {
                 final var request = objectMapper.readValue(line, Request.class);
                 logger.info("Received command: {}", request);
 
-                if (Objects.requireNonNull(request) instanceof Request.Command(Entity.Player.Direction direction)) {
+                if (Objects.requireNonNull(request) instanceof Request.Command(Direction direction)) {
                     actionsQueue.put(new Action(player, direction));
                 }
             }
