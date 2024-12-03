@@ -199,7 +199,7 @@ public class Game {
         // "fight" - health of all players is reduced by half of health of the weakest one
         if (players.size() > 1) {
             final var optionalMinimum = players.stream().min((o1, o2) -> Integer.compare(playerHealth.get(o1), playerHealth.get(o2))).map(playerHealth::get);
-            final var optionalHit = optionalMinimum.map(m -> Math.min(m, MINIMUM_HIT));
+            final var optionalHit = optionalMinimum.map(m -> Math.max(m / 2, MINIMUM_HIT));
             optionalHit.ifPresent(hit -> players.forEach(player -> playerHealth.compute(player, (ignored, health) -> Math.max(health - hit, 0))));
         }
 
