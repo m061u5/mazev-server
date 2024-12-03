@@ -4,6 +4,8 @@ package example.server;
 
 import java.io.*;
 import java.net.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.locks.*;
@@ -12,6 +14,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import example.domain.Request;
 import example.domain.Response;
+import example.domain.configuration.Config;
+import example.domain.configuration.PlayerConfiguration;
 import example.domain.game.Action;
 import example.domain.game.Direction;
 import example.domain.game.Player;
@@ -23,20 +27,19 @@ public class Server {
     private static final Logger logger = LoggerFactory.getLogger(Server.class);
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
-    private final AtomicReference<Response.StateLocations> state = new AtomicReference<>(new Response.StateLocations(List.of(), List.of()));
+    private final AtomicReference<State> state = new AtomicReference<>(new State(List.of(), List.of(), Map.of(), Map.of()));
     private final BlockingQueue<Action> actionsQueue = new LinkedBlockingQueue<>();
     private final Lock stateLock = new ReentrantLock();
     private final Condition stateUpdated = stateLock.newCondition();
     private final Game game;
 
-    private final Map<Request.Authorize, Player.HumanPlayer> known = Map.of(
-            new Request.Authorize("1234"),
-            new Player.HumanPlayer("Player 0")
-    );
+    private final Collection<PlayerConfiguration> known;
 
-    public Server(Game game) {
+    public Server(Game game, Path path) throws IOException {
+        final var config = objectMapper.readValue(Files.readAllBytes(path), Config.class);
+        this.known = config.known();
         this.game = game;
-        game.add(new Player.HumanPlayer("Player 0"), game::randomLocation);
+        known.forEach((configuration) -> game.add(configuration.player(), game::randomLocation));
         game.render();
     }
 
@@ -78,7 +81,11 @@ public class Server {
             final Player.HumanPlayer player;
             final var request = objectMapper.readValue(line, Request.class);
             if (Objects.requireNonNull(request) instanceof Request.Authorize authorize) {
-                player = known.get(authorize);
+                player = known.stream()
+                        .filter(configuration -> configuration.authorize().equals(authorize))
+                        .findAny()
+                        .map(PlayerConfiguration::player)
+                        .orElse(null);
                 if (player == null) {
                     final var json = objectMapper.writeValueAsString(new Response.Unauthorized());
                     writer.write(json);
@@ -103,7 +110,7 @@ public class Server {
             }
 
             Thread t1 = Thread.startVirtualThread(() -> handleClientCommands(reader, player));
-            Thread t2 = Thread.startVirtualThread(() -> handleClientState(writer));
+            Thread t2 = Thread.startVirtualThread(() -> handleClientState(writer, player));
             t1.join();
             t2.join();
         } catch (IOException e) {
@@ -127,14 +134,13 @@ public class Server {
 
                 game.step(actions);
 
-                final var itemLocations = game.items().entrySet().stream().map(entry -> new Response.StateLocations.ItemLocation(entry.getKey(), entry.getValue())).toList();
-                final var playerLocations = game.players().entrySet().stream().map(entry -> new Response.StateLocations.PlayerLocation(entry.getKey(), entry.getValue())).toList();
+                final var itemLocations = game.itemLocation().entrySet().stream().map(entry -> new Response.StateLocations.ItemLocation(entry.getKey(), entry.getValue())).toList();
+                final var playerLocations = game.playerLocation().entrySet().stream().map(entry -> new Response.StateLocations.PlayerLocation(entry.getKey(), entry.getValue())).toList();
+
                 // Update the state
                 stateLock.lock();
                 try {
-                    state.set(new Response.StateLocations(itemLocations, playerLocations));
-                    logger.info("Items updated to {}", itemLocations);
-                    logger.info("Players updated to {}", playerLocations);
+                    state.set(new State(itemLocations, playerLocations, game.playerHealth(), game.playerGold()));
                     // Notify client state threads
                     stateUpdated.signalAll();
                 } finally {
@@ -156,7 +162,7 @@ public class Server {
                 }
 
                 final var request = objectMapper.readValue(line, Request.class);
-                logger.info("Received command: {}", request);
+                logger.info("Received command {} from {}", request, player);
 
                 if (Objects.requireNonNull(request) instanceof Request.Command(Direction direction)) {
                     actionsQueue.put(new Action(player, direction));
@@ -164,10 +170,15 @@ public class Server {
             }
         } catch (IOException | InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            try {
+                reader.close();
+            } catch (IOException e) {
+            }
         }
     }
 
-    private void handleClientState(BufferedWriter writer) {
+    private void handleClientState(BufferedWriter writer, Player.HumanPlayer player) {
         try {
             while (!Thread.currentThread().isInterrupted()) {
                 stateLock.lock();
@@ -175,17 +186,33 @@ public class Server {
                     stateUpdated.await();
                     // Send the new state to the client
                     final var currentState = state.get();
-                    final var stateJson = objectMapper.writeValueAsString(currentState);
+                    final var playerState = new Response.StateLocations(
+                            currentState.itemLocations(),
+                            currentState.playerLocations(),
+                            currentState.playerHealths().getOrDefault(player, 0),
+                            currentState.playerGolds().getOrDefault(player, 0)
+                    );
+                    final var stateJson = objectMapper.writeValueAsString(playerState);
                     writer.write(stateJson);
                     writer.newLine();
                     writer.flush();
-                    logger.info("Sent state {}", stateJson);
                 } finally {
                     stateLock.unlock();
                 }
             }
         } catch (IOException | InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            try {
+                writer.close();
+            } catch (IOException e) {
+            }
         }
+    }
+
+    private record State(List<Response.StateLocations.ItemLocation> itemLocations,
+                         List<Response.StateLocations.PlayerLocation> playerLocations,
+                         Map<Player, Integer> playerHealths,
+                         Map<Player, Integer> playerGolds) {
     }
 }
