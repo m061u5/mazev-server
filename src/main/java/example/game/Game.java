@@ -2,7 +2,6 @@ package example.game;
 
 import example.domain.game.*;
 
-import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
@@ -10,14 +9,15 @@ import java.util.stream.Collectors;
 
 public class Game {
     private static final Random rg = new Random();
-    private static final int NUM_GOLD = 20;
-    private static final int NUM_HEALTH = 20;
-    private static final int MINIMUM_HIT = 30;
+    private static final int NUM_GOLD = 3;
+    private static final int NUM_HEALTH = 3;
+    private static final int MINIMUM_HIT = 40;
     private final Map<Item, Location> itemLocation;
     private final Map<Player, Location> playerLocation;
     private final Map<Player, Integer> playerHealth;
     private final Map<Player, Integer> playerGold;
     private final Cave cave;
+    private int step;
 
     public Map<Player, Integer> playerHealth() {
         return Collections.unmodifiableMap(playerHealth);
@@ -115,7 +115,7 @@ public class Game {
 
             playerLocation.put(entity, location);
             if (entity instanceof Player.HumanPlayer player) {
-                playerHealth.put(player, 100);
+                playerHealth.put(player, 500);
                 playerGold.put(player, 0);
             }
 
@@ -136,6 +136,7 @@ public class Game {
     }
 
     public void step(Collection<Action> commands) {
+        step++;
         // make sure there is only one command per player
         final var filtered = commands.stream()
                 .collect(Collectors.groupingBy(Action::player))
@@ -198,9 +199,22 @@ public class Game {
 
         // "fight" - health of all players is reduced by half of health of the weakest one
         if (players.size() > 1) {
-            final var optionalMinimum = players.stream().min((o1, o2) -> Integer.compare(playerHealth.get(o1), playerHealth.get(o2))).map(playerHealth::get);
-            final var optionalHit = optionalMinimum.map(m -> Math.min(m, MINIMUM_HIT));
+            final var optionalMinimumPlayer = players.stream().min((o1, o2) -> Integer.compare(playerHealth.get(o1), playerHealth.get(o2)));
+            final var optionalMinimumHealth = optionalMinimumPlayer.map(playerHealth::get);
+            final var optionalHit = optionalMinimumHealth.map(m -> Math.max(m / 2, MINIMUM_HIT));
             optionalHit.ifPresent(hit -> players.forEach(player -> playerHealth.compute(player, (ignored, health) -> Math.max(health - hit, 0))));
+//            optionalMinimumPlayer.filter(player -> playerHealth.get(player).equals(0)).ifPresent(player );
+            final var dead = players.stream()
+                    .filter(player -> playerHealth.get(player).equals(0))
+                    .toList();
+
+            final var loot = dead.stream()
+                    .mapToInt(player -> playerGold.get(player)).sum();
+
+
+            final var optionalMaximum = players.stream().max((o1, o2) -> Integer.compare(playerHealth.get(o1), playerHealth.get(o2)));
+
+            optionalMaximum.ifPresent(maximum -> playerGold.computeIfPresent(maximum, (ignored, gold) -> gold + loot / 2));
         }
 
         final var optionalMaximum = players.stream().max((o1, o2) -> Integer.compare(playerHealth.get(o1), playerHealth.get(o2)));
@@ -229,6 +243,7 @@ public class Game {
 
     private Location move(Location value, Action action) {
         return switch (action.direction()) {
+            case null -> value;
             case Up -> new Location(value.row() - 1, value.column());
             case Down -> new Location(value.row() + 1, value.column());
             case Left -> new Location(value.row(), value.column() - 1);
@@ -242,5 +257,19 @@ public class Game {
 
     public Integer gold(Player.HumanPlayer player) {
         return playerGold.get(player);
+    }
+
+    public void statistics() {
+        if (step % 10 != 0) {
+            return;
+        }
+
+        System.out.println("------------------------------");
+        System.out.println("Step: " + step);
+        playerGold.entrySet().stream()
+                .sorted(Map.Entry.comparingByValue())
+                .map(Map.Entry::getKey)
+                .map(player -> "Gold: " + playerGold.getOrDefault(player, 0) + ", Health: " + playerHealth.getOrDefault(player, 0) + ", Player: " + player)
+                .forEach(System.out::println);
     }
 }

@@ -57,8 +57,8 @@ public class GameTest {
         game.step(actions);
 
         Assertions.assertEquals(expected, game.playerLocation());
-        Assertions.assertEquals(50, game.health(player1));
-        Assertions.assertEquals(50, game.health(player2));
+        Assertions.assertEquals(250, game.health(player1));
+        Assertions.assertEquals(250, game.health(player2));
     }
 
     @Test
@@ -82,8 +82,8 @@ public class GameTest {
         game.step(actions);
 
         Assertions.assertEquals(expected, game.playerLocation());
-        Assertions.assertEquals(60, game.health(player1));
-        Assertions.assertEquals(50, game.health(player2));
+        Assertions.assertEquals(260, game.health(player1));
+        Assertions.assertEquals(250, game.health(player2));
     }
 
     @Test
